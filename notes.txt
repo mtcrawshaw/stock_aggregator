@@ -1,0 +1,13 @@
+Create a single script to pull tweets from @SnailMonitor, parse them to compute GPU
+restocking frequency on Amazon.
+
+Outline:
+    Parse arguments
+      - history_days: how many days to look back in tweet history
+      - product_keywords: comma-separated list of keywords to search product name for
+--> Collect and parse tweets, adding to counts
+      - Get tweets from Twitter API
+      - Check for keywords to qualify a tweet
+      - Get Amazon ASIN from URL as count ID
+      - Add to count
+    Output statistics to Google sheets
