@@ -4,10 +4,11 @@ restocking frequency on Amazon.
 Outline:
     Collect tweets
     For each tweet, get ASIN, then add to running statistics
---> Output statistics to Google sheets
-
-Additions:
-    Store and retrieve stats so that we can look backward more than one week
+    Output statistics to Google sheets
+--> Store and retrieve stats to look backward more than one week
     Get product name with ASIN
     Visualization of restocking for single ASIN, to try to find patterns in restocking
     Get product MSRP and put into spreadsheet
+
+Refactoring:
+    Get rid of temp CSV file and just write into Pandas dataframe

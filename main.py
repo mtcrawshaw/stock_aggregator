@@ -3,22 +3,47 @@ Compute and print out statisics for GPU restocking frequency according to tweets
 @SnailMonitor.
 """
 
+import os
 import argparse
 import json
 import requests
+import csv
 from urllib.parse import quote
 from typing import List, Dict
 
+import gspread
 
-CREDENTIALS_PATH = "credentials.json"
+
+TWITTER_CREDENTIALS_PATH = "twitter_credentials.json"
 
 TWITTER_USERNAME = "SnailMonitor"
 TWITTER_URL_PREFIX = "https://api.twitter.com/2/tweets/search/recent"
-PRODUCT_HASHTAGS = ["RTX3070", "RTX3080"]
+PRODUCT_TYPES = ["RTX3070", "RTX3080"]
 MAX_RESULTS = 100
 
 SHORTENED_URL_PREFIX = "https://t.co"
 ASID_LENGTH = 10
+
+DRIVE_CREDENTIALS_PATH = "drive_credentials.json"
+TEMP_CSV_PATH = ".temp_stats.csv"
+
+
+class Product:
+    """ Struct to store product staistics. """
+
+    def __init__(self, asin: str, product_type: str, num_restocks: int = 0) -> None:
+        """ Init function for Product. """
+        self.asin = asin
+        self.product_type = product_type
+        self.num_restocks = num_restocks
+
+    def __repr__(self) -> str:
+        """ String representation of `self`. """
+        return "ASID: %s, Type: %s, Num Restocks: %d" % (
+            self.asin,
+            self.product_type,
+            self.num_restocks,
+        )
 
 
 def get_tweets() -> List[str]:
@@ -32,13 +57,13 @@ def get_tweets() -> List[str]:
     """
 
     # Read in API credentials.
-    with open(CREDENTIALS_PATH, "r") as credentials_file:
+    with open(TWITTER_CREDENTIALS_PATH, "r") as credentials_file:
         credentials = json.load(credentials_file)
 
     # Construct API query.
-    hashtag_subquery = "#%s" % PRODUCT_HASHTAGS[0]
-    for i in range(1, len(PRODUCT_HASHTAGS)):
-        hashtag_subquery += " OR #%s" % PRODUCT_HASHTAGS[i]
+    hashtag_subquery = "#%s" % PRODUCT_TYPES[0]
+    for i in range(1, len(PRODUCT_TYPES)):
+        hashtag_subquery += " OR #%s" % PRODUCT_TYPES[i]
     query = "from:%s has:links (%s)" % (TWITTER_USERNAME, hashtag_subquery)
 
     # Construct request URL and headers.
@@ -61,7 +86,7 @@ def get_tweets() -> List[str]:
     return tweets
 
 
-def count_restocks(tweets: List[str]) -> Dict[str, int]:
+def count_restocks(tweets: List[str]) -> List[Product]:
     """
     Count number of restocks for each product based on tweet notifications.
 
@@ -72,8 +97,8 @@ def count_restocks(tweets: List[str]) -> Dict[str, int]:
 
     Returns
     -------
-    restock_stats : Dict[str, int]
-        Dictionary mapping Amazon ASIN to number of restocks as described by tweets.
+    restock_stats : List[Product]
+        List of product restock stats as described by tweets.
     """
 
     # Create requests session to full URLs with.
@@ -92,23 +117,98 @@ def count_restocks(tweets: List[str]) -> Dict[str, int]:
             )
         if len(links) == 0:
             continue
+        link = links[0]
+
+        # Get product type from hashtags. There should only be one hashtag in the tweet
+        # matching a hashtag describing product type.
+        tweet_hashtags = [
+            hashtag for hashtag in PRODUCT_TYPES if ("#%s" % hashtag) in words
+        ]
+        if len(tweet_hashtags) > 1:
+            raise ValueError(
+                "The following tweet contains more than one product hashtag: %s" % tweet
+            )
+        if len(tweet_hashtags) == 0:
+            continue
+        product_type = tweet_hashtags[0]
 
         # Get full URL.
-        link = links[0]
         response = session.head(link, allow_redirects=True)
         full_url = response.url
 
         # Get ASID from full URL.
-        asid_end = full_url.find("?")
-        asid_start = asid_end - 10
-        asid = full_url[asid_start:asid_end]
+        asin_end = full_url.find("?")
+        asin_start = asin_end - 10
+        asin = full_url[asin_start:asin_end]
 
         # Add count to running stats.
-        if asid not in restock_stats:
-            restock_stats[asid] = 0
-        restock_stats[asid] += 1
+        if asin not in restock_stats:
+            restock_stats[asin] = Product(asin, product_type, num_restocks=0)
+        restock_stats[asin].num_restocks += 1
 
-    return restock_stats
+    return list(restock_stats.values())
+
+
+def dump_stats(restock_stats: List[Product]) -> None:
+    """
+    Dump product restock statistics to Google Sheets.
+
+    Parameters
+    ----------
+    restock_stats : List[Product]
+        List of product restock stats.
+    """
+
+    # Partition products by type.
+    partitioned_products = {
+        product_type: [
+            product for product in restock_stats if product.product_type == product_type
+        ]
+        for product_type in PRODUCT_TYPES
+    }
+
+    # Sort products within each hashtag by number of restocks.
+    product_key = lambda p: p.num_restocks
+    for product_type in PRODUCT_TYPES:
+        partitioned_products[product_type] = sorted(
+            partitioned_products[product_type], key=product_key, reverse=True
+        )
+
+    # Dump stats.
+    try:
+
+        # Write out stats to temporary CSV file.
+        with open(TEMP_CSV_PATH, "w") as temp_csv_file:
+            csv_writer = csv.writer(temp_csv_file)
+
+            # Write out column names.
+            num_cols = 2
+            csv_writer.writerow(["Product Type", "ASIN", "Restocks"])
+            csv_writer.writerow([""])
+
+            # Write out stats for each product.
+            for product_type in PRODUCT_TYPES:
+                for product in partitioned_products[product_type]:
+                    csv_writer.writerow(
+                        [product_type, product.asin, str(product.num_restocks)]
+                    )
+                csv_writer.writerow([""])
+
+        # Dump file to Google Sheets.
+        gc = gspread.service_account(filename=DRIVE_CREDENTIALS_PATH)
+        content = open(TEMP_CSV_PATH, "r").read()
+        drive_credentials = json.load(open(DRIVE_CREDENTIALS_PATH, "r"))
+        gc.import_csv(drive_credentials["spreadsheet_id"], content)
+
+        # Clean up temporary CSV file.
+        os.remove(TEMP_CSV_PATH)
+
+    except:
+
+        # Clean up our dumped CSV file if it's still there, then re-raise error.
+        if os.path.isfile(TEMP_CSV_PATH):
+            os.remove(TEMP_CSV_PATH)
+        raise
 
 
 def main() -> None:
@@ -123,7 +223,7 @@ def main() -> None:
     restock_stats = count_restocks(tweets)
 
     # Output statistics to Google Sheets.
-    # START HERE
+    dump_stats(restock_stats)
 
 
 if __name__ == "__main__":
