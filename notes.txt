@@ -2,12 +2,12 @@ Create a single script to pull tweets from @SnailMonitor, parse them to compute 
 restocking frequency on Amazon.
 
 Outline:
-    Parse arguments
-      - history_days: how many days to look back in tweet history
-      - product_keywords: comma-separated list of keywords to search product name for
     Collect tweets
---> For each tweet, get ASIN, then add to running statistics
-    Output statistics to Google sheets
+    For each tweet, get ASIN, then add to running statistics
+--> Output statistics to Google sheets
 
 Additions:
+    Store and retrieve stats so that we can look backward more than one week
+    Get product name with ASIN
     Visualization of restocking for single ASIN, to try to find patterns in restocking
+    Get product MSRP and put into spreadsheet
