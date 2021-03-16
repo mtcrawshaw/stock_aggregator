@@ -1,2 +1,4 @@
 *.swp
 *credentials.json
+*.pkl
+__pycache__

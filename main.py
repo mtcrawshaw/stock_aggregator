@@ -1,54 +1,111 @@
 """
-Compute and print out statisics for GPU restocking frequency according to tweets of
+Compute and output statisics for GPU drop frequency according to tweets of
 @SnailMonitor.
 """
 
 import os
 import argparse
+import pickle
 import json
 import requests
 import csv
+from datetime import datetime, timedelta
 from urllib.parse import quote
 from typing import List, Dict, Any
 
 import gspread
 
 
-TWITTER_CREDENTIALS_PATH = "twitter_credentials.json"
+DROP_DATABASE_PATH = "drop_database.pkl"
 
+TWITTER_CREDENTIALS_PATH = "twitter_credentials.json"
 TWITTER_USERNAME = "SnailMonitor"
 TWITTER_URL_PREFIX = "https://api.twitter.com/2/tweets/search/recent"
+TWITTER_TIME_FORMAT_1 = "%Y-%m-%dT%H:%M:%S.000Z"
+TWITTER_TIME_FORMAT_2 = "%Y-%m-%dT%H:%M:%SZ"
 PRODUCT_TYPES = ["RTX3070", "RTX3080"]
 MAX_RESULTS = 100
 
 SHORTENED_URL_PREFIX = "https://t.co"
-ASID_LENGTH = 10
+ASIN_LENGTH = 10
 
 DRIVE_CREDENTIALS_PATH = "drive_credentials.json"
 TEMP_CSV_PATH = ".temp_stats.csv"
 
 
-class Product:
-    """ Struct to store product staistics. """
+class Drop:
+    """ Struct to represent a single product drop. """
 
-    def __init__(self, asin: str, product_type: str, num_restocks: int = 0) -> None:
-        """ Init function for Product. """
+    def __init__(self, asin: str, product_type: str, drop_time: datetime) -> None:
+        """ Init function for Drop. """
         self.asin = asin
         self.product_type = product_type
-        self.num_restocks = num_restocks
+        self.time = drop_time
+
+        self.state_vars = ["asin", "product_type", "time"]
 
     def __repr__(self) -> str:
         """ String representation of `self`. """
-        return "ASID: %s, Type: %s, Num Restocks: %d" % (
-            self.asin,
-            self.product_type,
-            self.num_restocks,
+        return str(self.state_dict())
+
+    def __eq__(self, other) -> bool:
+        """ Comparator for Drop. """
+        self_dict = self.state_dict()
+        other_dict = other.state_dict()
+        return all(
+            self_dict[state_var] == other_dict[state_var]
+            for state_var in self.state_vars
         )
 
+    def state_dict(self) -> Dict[str, Any]:
+        """ Dictionary containing state attribute values. """
+        return {state_var: getattr(self, state_var) for state_var in self.state_vars}
 
-def get_tweets() -> List[str]:
+
+class ProductStats:
+    """ Struct to store product staistics. """
+
+    def __init__(self, asin: str, product_type: str, drops: List[Drop] = []) -> None:
+        """ Init function for Product. """
+        self.asin = asin
+        self.product_type = product_type
+        self.drops = list(drops)
+
+        # Check drops.
+        for i, drop in enumerate(self.drops):
+            assert drop.asin == self.asin
+            assert drop.product_type == self.product_type
+            assert drop not in self.drops[:i]
+
+    def __repr__(self) -> str:
+        """ String representation of `self`. """
+        return "ASIN: %s, Type: %s, Num Drops: %d" % (
+            self.asin,
+            self.product_type,
+            self.num_drops,
+        )
+
+    def add_drop(self, drop: Drop) -> None:
+        """ Add a drop to list of drops over which to compute statistics. """
+        assert drop.asin == self.asin
+        assert drop.product_type == self.product_type
+        assert drop not in self.drops
+        self.drops.append(drop)
+
+    @property
+    def num_drops(self) -> int:
+        """ Total number of drops for product. """
+        return len(self.drops)
+
+
+def get_tweets(start_time: datetime = None) -> List[Dict[str, Any]]:
     """
     Retrieve list of tweets from Twitter API.
+
+    Parameters
+    ----------
+    start_time : datetime
+        If provided, this function will only retrieve tweets after `start_time`.
 
     Returns
     -------
@@ -75,7 +132,13 @@ def get_tweets() -> List[str]:
         return url
 
     # Construct request URL and headers.
-    kwargs = {"query": quote(query), "max_results": MAX_RESULTS}
+    kwargs = {
+        "query": quote(query),
+        "tweet.fields": "created_at",
+        "max_results": MAX_RESULTS,
+    }
+    if start_time is not None:
+        kwargs["start_time"] = start_time.strftime(TWITTER_TIME_FORMAT_2)
     url = get_url(kwargs)
     headers = {"Authorization": "Bearer {}".format(credentials["bearer_token"])}
 
@@ -97,8 +160,16 @@ def get_tweets() -> List[str]:
         response = response.json()
         num_requests += 1
 
+        # Check whether response is empty.
+        if response["meta"]["result_count"] == 0:
+            next_token = None
+            break
+
         # Parse response into list of tweets and add to running list.
-        tweets += [tweet["text"] for tweet in response["data"]]
+        tweets += [
+            {"text": tweet["text"], "time": tweet["created_at"]}
+            for tweet in response["data"]
+        ]
 
         # Get next pagination token.
         if "next_token" in response["meta"]:
@@ -109,34 +180,51 @@ def get_tweets() -> List[str]:
     return tweets
 
 
-def count_restocks(tweets: List[str]) -> List[Product]:
+def get_drops() -> List[Drop]:
     """
-    Count number of restocks for each product based on tweet notifications.
-
-    Parameters
-    ----------
-    tweets : List[str]
-        List of tweets notifying product restocks.
+    Retrieve list of drops for all products of interest.
 
     Returns
     -------
-    restock_stats : List[Product]
-        List of product restock stats as described by tweets.
+    drops : List[Drop]
+        List of drops for all products of interest.
     """
 
-    # Create requests session to full URLs with.
+    # Load drops from saved database, if it exists.
+    drops = []
+    most_recent_drop_time = None
+    if os.path.isfile(DROP_DATABASE_PATH):
+        with open(DROP_DATABASE_PATH, "rb") as drop_database_file:
+            drops = pickle.load(drop_database_file)
+
+        # Get time of most recent drop, so we can only pull tweets from after that.
+        most_recent_drop_time = max([drop.time for drop in drops])
+
+    # Get notification bot tweets from Twitter API. Note that we only pull tweets from 1
+    # second after the most recent drop in the saved database, since the `start_time`
+    # parameter is inclusive.
+    start_time = (
+        None
+        if most_recent_drop_time is None
+        else most_recent_drop_time + timedelta(seconds=1)
+    )
+    tweets = get_tweets(start_time=start_time)
+
+    # Create requests session to unshorten URLs with.
     session = requests.Session()
 
-    restock_stats = {}
     is_link = lambda x: x.startswith(SHORTENED_URL_PREFIX)
     for tweet in tweets:
 
+        tweet_text = tweet["text"]
+        tweet_time = tweet["time"]
+
         # Get Amazon link from tweet, if one exists. There should not be more than one.
-        words = tweet.split()
+        words = tweet_text.split()
         links = [word for word in words if is_link(word)]
         if len(links) > 1:
             raise ValueError(
-                "The following tweet contains more than one link: %s" % tweet
+                "The following tweet contains more than one link: %s" % tweet_text
             )
         if len(links) == 0:
             continue
@@ -149,7 +237,8 @@ def count_restocks(tweets: List[str]) -> List[Product]:
         ]
         if len(tweet_hashtags) > 1:
             raise ValueError(
-                "The following tweet contains more than one product hashtag: %s" % tweet
+                "The following tweet contains more than one product hashtag: %s"
+                % tweet_text
             )
         if len(tweet_hashtags) == 0:
             continue
@@ -159,39 +248,69 @@ def count_restocks(tweets: List[str]) -> List[Product]:
         response = session.head(link, allow_redirects=True)
         full_url = response.url
 
-        # Get ASID from full URL.
+        # Get ASIN from full URL.
         asin_end = full_url.find("?")
         asin_start = asin_end - 10
         asin = full_url[asin_start:asin_end]
 
-        # Add count to running stats.
-        if asin not in restock_stats:
-            restock_stats[asin] = Product(asin, product_type, num_restocks=0)
-        restock_stats[asin].num_restocks += 1
+        # Get time of tweet.
+        drop_time = datetime.strptime(tweet_time, TWITTER_TIME_FORMAT_1)
 
-    return list(restock_stats.values())
+        # Add drop to total list of drops.
+        drops.append(Drop(asin, product_type, drop_time))
+
+    # Store drops in drop database.
+    with open(DROP_DATABASE_PATH, "wb") as drop_database_file:
+        pickle.dump(drops, drop_database_file)
+
+    return drops
 
 
-def dump_stats(restock_stats: List[Product]) -> None:
+def compute_drop_stats(drops: List[Drop]) -> List[ProductStats]:
     """
-    Dump product restock statistics to Google Sheets.
+    Compute drop statistics for each product from total list of drops.
 
     Parameters
     ----------
-    restock_stats : List[Product]
-        List of product restock stats.
+    drops : List[Drop]
+        List of drops for all products of interest.
+
+    Returns
+    -------
+    drop_stats : List[ProductStats]
+        List of product drop stats as described by list of drops.
+    """
+
+    # Add each drop to running stats.
+    drop_stats = {}
+    for drop in drops:
+        if drop.asin not in drop_stats:
+            drop_stats[drop.asin] = ProductStats(drop.asin, drop.product_type)
+        drop_stats[drop.asin].add_drop(drop)
+
+    return list(drop_stats.values())
+
+
+def dump_stats(drop_stats: List[ProductStats]) -> None:
+    """
+    Dump product drop statistics to Google Sheets.
+
+    Parameters
+    ----------
+    drop_stats : List[ProductStats]
+        List of product drop stats.
     """
 
     # Partition products by type.
     partitioned_products = {
         product_type: [
-            product for product in restock_stats if product.product_type == product_type
+            product for product in drop_stats if product.product_type == product_type
         ]
         for product_type in PRODUCT_TYPES
     }
 
-    # Sort products within each hashtag by number of restocks.
-    product_key = lambda p: p.num_restocks
+    # Sort products within each product type by number of drops.
+    product_key = lambda p: p.num_drops
     for product_type in PRODUCT_TYPES:
         partitioned_products[product_type] = sorted(
             partitioned_products[product_type], key=product_key, reverse=True
@@ -206,14 +325,14 @@ def dump_stats(restock_stats: List[Product]) -> None:
 
             # Write out column names.
             num_cols = 2
-            csv_writer.writerow(["Product Type", "ASIN", "Restocks"])
+            csv_writer.writerow(["Product Type", "ASIN", "Drops"])
             csv_writer.writerow([""])
 
             # Write out stats for each product.
             for product_type in PRODUCT_TYPES:
                 for product in partitioned_products[product_type]:
                     csv_writer.writerow(
-                        [product_type, product.asin, str(product.num_restocks)]
+                        [product_type, product.asin, str(product.num_drops)]
                     )
                 csv_writer.writerow([""])
 
@@ -236,17 +355,17 @@ def dump_stats(restock_stats: List[Product]) -> None:
 
 def main() -> None:
     """
-    Main function for restock statistics aggregator.
+    Main function for drop statistics aggregator.
     """
 
-    # Get tweets from Twitter API.
-    tweets = get_tweets()
+    # Get history of drops.
+    drops = get_drops()
 
     # Parse tweets and aggregate stats.
-    restock_stats = count_restocks(tweets)
+    drop_stats = compute_drop_stats(drops)
 
     # Output statistics to Google Sheets.
-    dump_stats(restock_stats)
+    dump_stats(drop_stats)
 
 
 if __name__ == "__main__":
