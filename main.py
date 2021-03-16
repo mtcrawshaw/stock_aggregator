@@ -27,6 +27,7 @@ PRODUCT_TYPES = ["RTX3070", "RTX3080"]
 MAX_RESULTS = 100
 
 SHORTENED_URL_PREFIX = "https://t.co"
+DROP_MESSAGE = " in stock at"
 ASIN_LENGTH = 10
 
 DRIVE_CREDENTIALS_PATH = "drive_credentials.json"
@@ -36,13 +37,14 @@ TEMP_CSV_PATH = ".temp_stats.csv"
 class Drop:
     """ Struct to represent a single product drop. """
 
-    def __init__(self, asin: str, product_type: str, drop_time: datetime) -> None:
+    def __init__(self, asin: str, name: str, product_type: str, drop_time: datetime) -> None:
         """ Init function for Drop. """
         self.asin = asin
+        self.name = name
         self.product_type = product_type
         self.time = drop_time
 
-        self.state_vars = ["asin", "product_type", "time"]
+        self.state_vars = ["asin", "name", "product_type", "time"]
 
     def __repr__(self) -> str:
         """ String representation of `self`. """
@@ -96,6 +98,22 @@ class ProductStats:
     def num_drops(self) -> int:
         """ Total number of drops for product. """
         return len(self.drops)
+
+    @property
+    def name(self) -> str:
+        """
+        Name of product. Note that this isn't a unique identifier and it may even be the
+        case that products with the same ASIN have a different name, so you shouldn't
+        rely on the name for any consistent information. Also, the name may change as
+        more drops are added since we return the name as the majority vote of the names
+        of the product in each drop. This should only be used for human readability of
+        output.
+        """
+        if self.drops == []:
+            return None
+        else:
+            names = [drop.name for drop in self.drops]
+            return max(set(names), key=names.count)
 
 
 def get_tweets(start_time: datetime = None) -> List[Dict[str, Any]]:
@@ -256,8 +274,12 @@ def get_drops() -> List[Drop]:
         # Get time of tweet.
         drop_time = datetime.strptime(tweet_time, TWITTER_TIME_FORMAT_1)
 
+        # Get name of product.
+        name_end = tweet_text.find(DROP_MESSAGE)
+        product_name = tweet_text[:name_end]
+
         # Add drop to total list of drops.
-        drops.append(Drop(asin, product_type, drop_time))
+        drops.append(Drop(asin, product_name, product_type, drop_time))
 
     # Store drops in drop database.
     with open(DROP_DATABASE_PATH, "wb") as drop_database_file:
@@ -325,14 +347,14 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
 
             # Write out column names.
             num_cols = 2
-            csv_writer.writerow(["Product Type", "ASIN", "Drops"])
+            csv_writer.writerow(["Product Type", "Product Name", "ASIN", "Drops"])
             csv_writer.writerow([""])
 
             # Write out stats for each product.
             for product_type in PRODUCT_TYPES:
                 for product in partitioned_products[product_type]:
                     csv_writer.writerow(
-                        [product_type, product.asin, str(product.num_drops)]
+                        [product_type, product.name, product.asin, str(product.num_drops)]
                     )
                 csv_writer.writerow([""])
 
