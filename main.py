@@ -9,7 +9,7 @@ import json
 import requests
 import csv
 from urllib.parse import quote
-from typing import List, Dict
+from typing import List, Dict, Any
 
 import gspread
 
@@ -66,22 +66,45 @@ def get_tweets() -> List[str]:
         hashtag_subquery += " OR #%s" % PRODUCT_TYPES[i]
     query = "from:%s has:links (%s)" % (TWITTER_USERNAME, hashtag_subquery)
 
+    # Define URL construction function.
+    def get_url(kwargs: Dict[str, Any]) -> str:
+        url = TWITTER_URL_PREFIX
+        for i, (key, value) in enumerate(kwargs.items()):
+            url += "?" if i == 0 else "&"
+            url += "%s=%s" % (key, value)
+        return url
+
     # Construct request URL and headers.
     kwargs = {"query": quote(query), "max_results": MAX_RESULTS}
-    url = TWITTER_URL_PREFIX
-    for i, (key, value) in enumerate(kwargs.items()):
-        url += "?" if i == 0 else "&"
-        url += "%s=%s" % (key, value)
+    url = get_url(kwargs)
     headers = {"Authorization": "Bearer {}".format(credentials["bearer_token"])}
 
-    # Make API request.
-    response = requests.request("GET", url, headers=headers)
-    if response.status_code != 200:
-        raise Exception(response.status_code, response.text)
-    response = response.json()
+    # Make API requests.
+    tweets = []
+    next_token = None
+    num_requests = 0
+    while num_requests == 0 or next_token is not None:
 
-    # Parse request response into a list of tweets in string format.
-    tweets = [tweet["text"] for tweet in response["data"]]
+        # Add pagination token to URL if necessary.
+        if next_token is not None:
+            kwargs["pagination_token"] = next_token
+        url = get_url(kwargs)
+
+        # Make request.
+        response = requests.request("GET", url, headers=headers)
+        if response.status_code != 200:
+            raise Exception(response.status_code, response.text)
+        response = response.json()
+        num_requests += 1
+
+        # Parse response into list of tweets and add to running list.
+        tweets += [tweet["text"] for tweet in response["data"]]
+
+        # Get next pagination token.
+        if "next_token" in response["meta"]:
+            next_token = response["meta"]["next_token"]
+        else:
+            next_token = None
 
     return tweets
 

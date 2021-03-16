@@ -5,8 +5,8 @@ Outline:
     Collect tweets
     For each tweet, get ASIN, then add to running statistics
     Output statistics to Google sheets
---> Retrieve multiple pages of tweets
-    Store and retrieve stats to look backward more than one week
+    Retrieve multiple pages of tweets
+--> Store and retrieve stats to look backward more than one week
     Get tool to run once a day
     Get product name
     Get product MSRP
@@ -14,3 +14,6 @@ Outline:
 
 Refactoring:
     Get rid of temp CSV file and just write to/from Pandas dataframe
+
+Additions:
+    Disregard duplicate tweets
