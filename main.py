@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from urllib.parse import quote
 from typing import List, Dict, Any
 
+import numpy as np
 import gspread
 
 
@@ -89,6 +90,9 @@ class ProductStats:
             assert drop.product_type == self.product_type
             assert drop not in self.drops[:i]
 
+        # Flag to avoid redundant sorting.
+        self.sorted = False
+
     def __repr__(self) -> str:
         """ String representation of `self`. """
         return "ASIN: %s, Type: %s, Num Drops: %d" % (
@@ -103,6 +107,8 @@ class ProductStats:
         assert drop.product_type == self.product_type
         assert drop not in self.drops
         self.drops.append(drop)
+
+        self.sorted = False
 
     @property
     def num_drops(self) -> int:
@@ -126,9 +132,28 @@ class ProductStats:
             return max(set(names), key=names.count)
 
     @property
-    def start_time(self) -> datetime:
+    def earliest_drop(self) -> datetime:
         """ Time of earliest drop in list of drops. """
         return min(drop.time for drop in self.drops)
+
+    @property
+    def avg_drop_delta(self) -> timedelta:
+        """ Average time between consecutive drops, rounded to the nearest second. """
+
+        # Sort the drops by time, if necessary.
+        if not self.sorted:
+            self.drops = sorted(self.drops, key=(lambda drop: drop.time))
+            self.sorted = True
+
+        # Get average time between drops.
+        deltas = [
+            self.drops[i + 1].time - self.drops[i].time
+            for i in range(len(self.drops) - 1)
+        ]
+        delta = None
+        if len(deltas) > 0:
+            delta = timedelta(seconds=int(np.mean(deltas).total_seconds()))
+        return delta
 
 
 def get_tweets(start_time: datetime = None) -> List[Dict[str, Any]]:
@@ -397,7 +422,7 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
     """
 
     # Get earliest drop time.
-    start_time = min(product_stat.start_time for product_stat in drop_stats)
+    start_time = min(product_stat.earliest_drop for product_stat in drop_stats)
 
     # Partition products by type.
     partitioned_products = {
@@ -422,10 +447,14 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
             csv_writer = csv.writer(temp_csv_file)
 
             # Write out header with start date.
-            csv_writer.writerow(["Data starts at:", start_time.isoformat(" ")])
+            csv_writer.writerow(["Tracking drops since:", start_time.isoformat(" ")])
+            csv_writer.writerow(["Last update:", datetime.now().isoformat(" ")])
+            csv_writer.writerow([""])
 
             # Write out column names.
-            csv_writer.writerow(["Product Type", "Product Name", "ASIN", "Drops"])
+            csv_writer.writerow(
+                ["Product Type", "Product Name", "ASIN", "Drops", "", "Avg Drop Delta"]
+            )
             csv_writer.writerow([""])
 
             # Write out stats for each product.
@@ -437,6 +466,8 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
                             product.name,
                             product.asin,
                             str(product.num_drops),
+                            "",
+                            str(product.avg_drop_delta),
                         ]
                     )
                 csv_writer.writerow([""])

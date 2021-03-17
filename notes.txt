@@ -8,8 +8,10 @@ Outline:
     Retrieve multiple pages of tweets
     Store and retrieve stats to look backward more than one week
     Get product name
---> Restocking over days of week for single ASIN, to try to find patterns in restocking
-    Summary of stats for each product
+    Average time between restocks, time since last drop
+--> Summary of stats for each product
+    Restocking over days of week for single ASIN, to try to find patterns in restocking
+    Output data over multiple time scales: last week, last month, last three months, all-time
     Deployment
 
 Refactoring:
@@ -18,8 +20,11 @@ Refactoring:
 
     To Do:
         Get rid of temp CSV file and just write to/from Pandas dataframe
+        Add other products (3060, 3090, anything else notified?)
         Allow for duplicate hashtags in tweets (3060 vs. 3060TI)
         Expand column size to fit entries
 
 Additions:
     Get product MSRP
+    Histogram for restock time of day
+    Correlation between restock of different products?
