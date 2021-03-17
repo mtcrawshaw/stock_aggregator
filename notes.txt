@@ -10,20 +10,22 @@ Outline:
     Get product name
     Average time between restocks, time since last drop
     First drop, last drop
---> Summary of stats for each product
-    Restocking over days of week for single ASIN, to try to find patterns in restocking
+    Time since last drop
+--> Restocking over days of week for single ASIN, to try to find patterns in restocking
     Output data over multiple time scales: last week, last month, last three months, all-time
     Deployment
 
 Refactoring:
     Done:
         Use Timelines from Twitter API to get more tweet history
+        Save last update time in database
 
     To Do:
         Get rid of temp CSV file and just write to/from Pandas dataframe
         Add other products (3060, 3090, anything else notified?)
         Allow for duplicate hashtags in tweets (3060 vs. 3060TI)
         Expand column size to fit entries
+        Normalize time output format
 
 Additions:
     Get product MSRP

@@ -26,7 +26,7 @@ TWITTER_USER_URL = "https://api.twitter.com/2/users/by"
 TWITTER_TIMELINE_URL = "https://api.twitter.com/2/users/%s/tweets"
 TWITTER_TIME_FORMAT_1 = "%Y-%m-%dT%H:%M:%S.000Z"
 TWITTER_TIME_FORMAT_2 = "%Y-%m-%dT%H:%M:%SZ"
-PRODUCT_TYPES = ["RTX3070", "RTX3080"]
+PRODUCT_TYPES = ["RTX3060", "RTX3070", "RTX3080", "RTX3090"]
 MAX_RESULTS = 100
 SINGLE_PAGE = False
 
@@ -260,22 +260,14 @@ def get_drops() -> List[Drop]:
 
     # Load drops from saved database, if it exists.
     drops = []
-    most_recent_drop_time = None
+    start_time = None
     if os.path.isfile(DROP_DATABASE_PATH):
         with open(DROP_DATABASE_PATH, "rb") as drop_database_file:
-            drops = pickle.load(drop_database_file)
+            db = pickle.load(drop_database_file)
+            drops = db["drops"]
+            start_time = db["last_update"]
 
-        # Get time of most recent drop, so we can only pull tweets from after that.
-        most_recent_drop_time = max([drop.time for drop in drops])
-
-    # Get notification bot tweets from Twitter API. Note that we only pull tweets from 1
-    # second after the most recent drop in the saved database, since the `start_time`
-    # parameter is inclusive.
-    start_time = (
-        None
-        if most_recent_drop_time is None
-        else most_recent_drop_time + timedelta(seconds=1)
-    )
+    update_time = datetime.now()
     tweets = get_tweets(start_time=start_time)
     print("total tweets retrieved: %d" % len(tweets))
 
@@ -359,7 +351,8 @@ def get_drops() -> List[Drop]:
     # Store drops in drop database.
     print("total drops: %d" % len(drops))
     with open(DROP_DATABASE_PATH, "wb") as drop_database_file:
-        pickle.dump(drops, drop_database_file)
+        db = {"drops": drops, "last_update": update_time}
+        pickle.dump(db, drop_database_file)
 
     return drops
 
@@ -467,6 +460,7 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
                     "First Drop",
                     "Last Drop",
                     "Avg Drop Delta",
+                    "Time Since Last Drop",
                 ]
             )
             csv_writer.writerow([""])
@@ -474,6 +468,11 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
             # Write out stats for each product.
             for product_type in PRODUCT_TYPES:
                 for product in partitioned_products[product_type]:
+                    time_since_last_drop = timedelta(
+                        seconds=int(
+                            (datetime.now() - product.last_drop).total_seconds()
+                        )
+                    )
                     csv_writer.writerow(
                         [
                             product_type,
@@ -481,9 +480,10 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
                             product.asin,
                             str(product.num_drops),
                             "",
-                            product.earliest_drop,
-                            product.last_drop,
+                            product.earliest_drop.isoformat(" "),
+                            product.last_drop.isoformat(" "),
                             str(product.avg_drop_delta),
+                            str(time_since_last_drop),
                         ]
                     )
                 csv_writer.writerow([""])
