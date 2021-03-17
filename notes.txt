@@ -9,6 +9,7 @@ Outline:
     Store and retrieve stats to look backward more than one week
     Get product name
     Average time between restocks, time since last drop
+    First drop, last drop
 --> Summary of stats for each product
     Restocking over days of week for single ASIN, to try to find patterns in restocking
     Output data over multiple time scales: last week, last month, last three months, all-time

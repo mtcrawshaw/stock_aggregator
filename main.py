@@ -137,6 +137,11 @@ class ProductStats:
         return min(drop.time for drop in self.drops)
 
     @property
+    def last_drop(self) -> datetime:
+        """ Time of last drop in list of drops. """
+        return max(drop.time for drop in self.drops)
+
+    @property
     def avg_drop_delta(self) -> timedelta:
         """ Average time between consecutive drops, rounded to the nearest second. """
 
@@ -453,7 +458,16 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
 
             # Write out column names.
             csv_writer.writerow(
-                ["Product Type", "Product Name", "ASIN", "Drops", "", "Avg Drop Delta"]
+                [
+                    "Product Type",
+                    "Product Name",
+                    "ASIN",
+                    "Drops",
+                    "",
+                    "First Drop",
+                    "Last Drop",
+                    "Avg Drop Delta",
+                ]
             )
             csv_writer.writerow([""])
 
@@ -467,6 +481,8 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
                             product.asin,
                             str(product.num_drops),
                             "",
+                            product.earliest_drop,
+                            product.last_drop,
                             str(product.avg_drop_delta),
                         ]
                     )
