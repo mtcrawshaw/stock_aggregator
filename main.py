@@ -9,6 +9,7 @@ import pickle
 import json
 import requests
 import csv
+import re
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from typing import List, Dict, Any
@@ -20,15 +21,22 @@ DROP_DATABASE_PATH = "drop_database.pkl"
 
 TWITTER_CREDENTIALS_PATH = "twitter_credentials.json"
 TWITTER_USERNAME = "SnailMonitor"
-TWITTER_URL_PREFIX = "https://api.twitter.com/2/tweets/search/recent"
+TWITTER_USER_URL = "https://api.twitter.com/2/users/by"
+TWITTER_TIMELINE_URL = "https://api.twitter.com/2/users/%s/tweets"
 TWITTER_TIME_FORMAT_1 = "%Y-%m-%dT%H:%M:%S.000Z"
 TWITTER_TIME_FORMAT_2 = "%Y-%m-%dT%H:%M:%SZ"
 PRODUCT_TYPES = ["RTX3070", "RTX3080"]
 MAX_RESULTS = 100
+SINGLE_PAGE = False
 
 SHORTENED_URL_PREFIX = "https://t.co"
-DROP_MESSAGE = " in stock at"
-ASIN_LENGTH = 10
+AMAZON_URL_KEYWORD = "amazon.com"
+DROP_MESSAGE_1 = " in stock at"
+DROP_MESSAGE_2 = " now available on"
+BAD_TWEET_THRESHOLD = 0.05
+BAD_DROP_THRESHOLD = 0.05
+ASIN_LEN = 10
+ASIN_PREFIX = "B0"
 
 DRIVE_CREDENTIALS_PATH = "drive_credentials.json"
 TEMP_CSV_PATH = ".temp_stats.csv"
@@ -37,7 +45,9 @@ TEMP_CSV_PATH = ".temp_stats.csv"
 class Drop:
     """ Struct to represent a single product drop. """
 
-    def __init__(self, asin: str, name: str, product_type: str, drop_time: datetime) -> None:
+    def __init__(
+        self, asin: str, name: str, product_type: str, drop_time: datetime
+    ) -> None:
         """ Init function for Drop. """
         self.asin = asin
         self.name = name
@@ -115,6 +125,11 @@ class ProductStats:
             names = [drop.name for drop in self.drops]
             return max(set(names), key=names.count)
 
+    @property
+    def start_time(self) -> datetime:
+        """ Time of earliest drop in list of drops. """
+        return min(drop.time for drop in self.drops)
+
 
 def get_tweets(start_time: datetime = None) -> List[Dict[str, Any]]:
     """
@@ -135,30 +150,35 @@ def get_tweets(start_time: datetime = None) -> List[Dict[str, Any]]:
     with open(TWITTER_CREDENTIALS_PATH, "r") as credentials_file:
         credentials = json.load(credentials_file)
 
-    # Construct API query.
-    hashtag_subquery = "#%s" % PRODUCT_TYPES[0]
-    for i in range(1, len(PRODUCT_TYPES)):
-        hashtag_subquery += " OR #%s" % PRODUCT_TYPES[i]
-    query = "from:%s has:links (%s)" % (TWITTER_USERNAME, hashtag_subquery)
-
     # Define URL construction function.
-    def get_url(kwargs: Dict[str, Any]) -> str:
-        url = TWITTER_URL_PREFIX
+    def get_url(prefix: str, kwargs: Dict[str, Any]) -> str:
+        url = prefix
         for i, (key, value) in enumerate(kwargs.items()):
             url += "?" if i == 0 else "&"
             url += "%s=%s" % (key, value)
         return url
 
-    # Construct request URL and headers.
+    # Construct request URL to get user ID.
+    headers = {"Authorization": "Bearer {}".format(credentials["bearer_token"])}
+    kwargs = {"usernames": TWITTER_USERNAME, "user.fields": "id"}
+    url = get_url(TWITTER_USER_URL, kwargs)
+
+    # Make API request to get user ID.
+    response = requests.request("GET", url, headers=headers)
+    if response.status_code != 200:
+        raise Exception(response.status_code, response.text)
+    response = response.json()
+    user_id = response["data"][0]["id"]
+
+    # Construct request URL to get user tweets.
     kwargs = {
-        "query": quote(query),
         "tweet.fields": "created_at",
         "max_results": MAX_RESULTS,
     }
     if start_time is not None:
         kwargs["start_time"] = start_time.strftime(TWITTER_TIME_FORMAT_2)
-    url = get_url(kwargs)
-    headers = {"Authorization": "Bearer {}".format(credentials["bearer_token"])}
+    twitter_timeline_prefix = TWITTER_TIMELINE_URL % user_id
+    url = get_url(twitter_timeline_prefix, kwargs)
 
     # Make API requests.
     tweets = []
@@ -169,7 +189,7 @@ def get_tweets(start_time: datetime = None) -> List[Dict[str, Any]]:
         # Add pagination token to URL if necessary.
         if next_token is not None:
             kwargs["pagination_token"] = next_token
-        url = get_url(kwargs)
+        url = get_url(twitter_timeline_prefix, kwargs)
 
         # Make request.
         response = requests.request("GET", url, headers=headers)
@@ -190,10 +210,10 @@ def get_tweets(start_time: datetime = None) -> List[Dict[str, Any]]:
         ]
 
         # Get next pagination token.
-        if "next_token" in response["meta"]:
-            next_token = response["meta"]["next_token"]
-        else:
+        if SINGLE_PAGE or "next_token" not in response["meta"]:
             next_token = None
+        else:
+            next_token = response["meta"]["next_token"]
 
     return tweets
 
@@ -227,11 +247,17 @@ def get_drops() -> List[Drop]:
         else most_recent_drop_time + timedelta(seconds=1)
     )
     tweets = get_tweets(start_time=start_time)
+    print("total tweets retrieved: %d" % len(tweets))
 
     # Create requests session to unshorten URLs with.
     session = requests.Session()
 
+    # Track number of tweets violating assumptions (only one product hashtag per tweet,
+    # only one link per tweet). If this number is too high, we crash.
+    num_bad_tweets = 0
+
     is_link = lambda x: x.startswith(SHORTENED_URL_PREFIX)
+    is_amazon_link = lambda x: AMAZON_URL_KEYWORD in x
     for tweet in tweets:
 
         tweet_text = tweet["text"]
@@ -241,9 +267,8 @@ def get_drops() -> List[Drop]:
         words = tweet_text.split()
         links = [word for word in words if is_link(word)]
         if len(links) > 1:
-            raise ValueError(
-                "The following tweet contains more than one link: %s" % tweet_text
-            )
+            num_bad_tweets += 1
+            continue
         if len(links) == 0:
             continue
         link = links[0]
@@ -254,34 +279,55 @@ def get_drops() -> List[Drop]:
             hashtag for hashtag in PRODUCT_TYPES if ("#%s" % hashtag) in words
         ]
         if len(tweet_hashtags) > 1:
-            raise ValueError(
-                "The following tweet contains more than one product hashtag: %s"
-                % tweet_text
-            )
+            num_bad_tweets += 1
+            continue
         if len(tweet_hashtags) == 0:
             continue
         product_type = tweet_hashtags[0]
 
-        # Get full URL.
+        # Get full URL and check that it is from Amazon.
         response = session.head(link, allow_redirects=True)
         full_url = response.url
+        if not is_amazon_link(full_url):
+            continue
 
         # Get ASIN from full URL.
-        asin_end = full_url.find("?")
-        asin_start = asin_end - 10
-        asin = full_url[asin_start:asin_end]
+        phrases = re.split("\?|/", full_url)
+        possible_asins = [
+            phrase
+            for phrase in phrases
+            if len(phrase) == ASIN_LEN and phrase.startswith(ASIN_PREFIX)
+        ]
+        if len(possible_asins) != 1:
+            print("Couldn't parse url `%s' for ASIN." % full_url)
+        asin = possible_asins[0]
 
         # Get time of tweet.
         drop_time = datetime.strptime(tweet_time, TWITTER_TIME_FORMAT_1)
 
         # Get name of product.
-        name_end = tweet_text.find(DROP_MESSAGE)
-        product_name = tweet_text[:name_end]
+        name_end = "N/A"
+        for drop_message in [DROP_MESSAGE_1, DROP_MESSAGE_2]:
+            if drop_message in tweet_text:
+                name_end = tweet_text.find(drop_message)
+                product_name = tweet_text[:name_end]
+                break
 
         # Add drop to total list of drops.
         drops.append(Drop(asin, product_name, product_type, drop_time))
 
+    # Check if the number of bad tweets is too high.
+    bad_tweet_ratio = num_bad_tweets / max(len(tweets), 1)
+    if bad_tweet_ratio > BAD_TWEET_THRESHOLD:
+        raise ValueError(
+            "Proportion of tweets that violated assumptions is %f, over the acceptable threshold of %f."
+            % (bad_tweet_ratio, BAD_TWEET_THRESHOLD)
+        )
+    else:
+        print("bad tweet ratio: %f" % bad_tweet_ratio)
+
     # Store drops in drop database.
+    print("total drops: %d" % len(drops))
     with open(DROP_DATABASE_PATH, "wb") as drop_database_file:
         pickle.dump(drops, drop_database_file)
 
@@ -303,12 +349,39 @@ def compute_drop_stats(drops: List[Drop]) -> List[ProductStats]:
         List of product drop stats as described by list of drops.
     """
 
+    # Get the most common product type for each ASIN. We do this as a way to robustify
+    # the computation. Since there is some noise in older drops, we just vote on the
+    # most common product type for each ASIN and discard the violating drops.
+    asins = list(set([drop.asin for drop in drops]))
+    asin_product_types = {asin: [] for asin in asins}
+    for drop in drops:
+        asin_product_types[drop.asin].append(drop.product_type)
+    asin_best_ptypes = {}
+    for asin, ptypes in asin_product_types.items():
+        asin_best_ptypes[asin] = max(set(ptypes), key=ptypes.count)
+
     # Add each drop to running stats.
+    bad_drops = 0
     drop_stats = {}
     for drop in drops:
         if drop.asin not in drop_stats:
-            drop_stats[drop.asin] = ProductStats(drop.asin, drop.product_type)
-        drop_stats[drop.asin].add_drop(drop)
+            drop_stats[drop.asin] = ProductStats(drop.asin, asin_best_ptypes[drop.asin])
+
+        # This is a bit gross, but it's what we have to do with noisy data.
+        if drop.product_type == asin_best_ptypes[drop.asin]:
+            drop_stats[drop.asin].add_drop(drop)
+        else:
+            bad_drops += 1
+
+    # Check that not too many drops were violating.
+    bad_drop_ratio = bad_drops / max(len(drops), 1)
+    if bad_drop_ratio > BAD_DROP_THRESHOLD:
+        raise ValueError(
+            "Too many drops (%f) where the same ASIN led to different product type."
+            % bad_drop_ratio
+        )
+    else:
+        print("bad drop ratio: %f" % bad_drop_ratio)
 
     return list(drop_stats.values())
 
@@ -322,6 +395,9 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
     drop_stats : List[ProductStats]
         List of product drop stats.
     """
+
+    # Get earliest drop time.
+    start_time = min(product_stat.start_time for product_stat in drop_stats)
 
     # Partition products by type.
     partitioned_products = {
@@ -345,8 +421,10 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
         with open(TEMP_CSV_PATH, "w") as temp_csv_file:
             csv_writer = csv.writer(temp_csv_file)
 
+            # Write out header with start date.
+            csv_writer.writerow(["Data starts at:", start_time.isoformat(" ")])
+
             # Write out column names.
-            num_cols = 2
             csv_writer.writerow(["Product Type", "Product Name", "ASIN", "Drops"])
             csv_writer.writerow([""])
 
@@ -354,7 +432,12 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
             for product_type in PRODUCT_TYPES:
                 for product in partitioned_products[product_type]:
                     csv_writer.writerow(
-                        [product_type, product.name, product.asin, str(product.num_drops)]
+                        [
+                            product_type,
+                            product.name,
+                            product.asin,
+                            str(product.num_drops),
+                        ]
                     )
                 csv_writer.writerow([""])
 

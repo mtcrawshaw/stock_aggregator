@@ -8,12 +8,18 @@ Outline:
     Retrieve multiple pages of tweets
     Store and retrieve stats to look backward more than one week
     Get product name
---> Get product MSRP
-    Visualization of restocking for single ASIN, to try to find patterns in restocking
+--> Restocking over days of week for single ASIN, to try to find patterns in restocking
+    Summary of stats for each product
     Deployment
 
 Refactoring:
-    Use Timelines from Twitter API to get more tweet history
-    Get rid of temp CSV file and just write to/from Pandas dataframe
-    Allow for duplicate hashtags in tweets (3060 vs. 3060TI)
-    Expand column size to fit entries
+    Done:
+        Use Timelines from Twitter API to get more tweet history
+
+    To Do:
+        Get rid of temp CSV file and just write to/from Pandas dataframe
+        Allow for duplicate hashtags in tweets (3060 vs. 3060TI)
+        Expand column size to fit entries
+
+Additions:
+    Get product MSRP
