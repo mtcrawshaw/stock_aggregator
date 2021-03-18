@@ -11,8 +11,8 @@ Outline:
     Average time between restocks, time since last drop
     First drop, last drop
     Time since last drop
---> Restocking over days of week for single ASIN, to try to find patterns in restocking
-    Output data over multiple time scales: last week, last month, last three months, all-time
+    Restocking over days of week for single ASIN, to try to find patterns in restocking
+--> Output data over multiple time scales: last week, last month, last three months, all-time
     Deployment
 
 Refactoring:
@@ -28,6 +28,6 @@ Refactoring:
         Normalize time output format
 
 Additions:
-    Get product MSRP
+    Get product MSRP (CamelCamelCamel?)
     Histogram for restock time of day
     Correlation between restock of different products?

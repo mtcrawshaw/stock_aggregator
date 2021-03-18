@@ -160,6 +160,43 @@ class ProductStats:
             delta = timedelta(seconds=int(np.mean(deltas).total_seconds()))
         return delta
 
+    @property
+    def weekly_histogram(self) -> List[float]:
+        """ 
+        Returns the expected number of drops per day for each day of the week.
+
+        Returns
+        -------
+        histogram : List[float]
+            List of floats with length 7, where the i-th entry is the expected number of
+            drops on the i-th day of the week.
+        """
+
+        # Count number of drops on each weekday.
+        days_in_week = 7
+        histogram = [0.0] * days_in_week
+        for drop in self.drops:
+            histogram[drop.time.weekday()] += 1.0
+
+        # Count number of occurences of each weekday and compute expectation as quotient
+        # of number of drops with number of occurrences.
+        earliest_drop = self.earliest_drop
+        earliest_drop_day = earliest_drop.weekday()
+        now = datetime.today()
+        now_day = now.weekday()
+        days_in_history = (now - earliest_drop).days
+        weeks_in_history = days_in_history // days_in_week
+        for day in range(days_in_week):
+            weekday_occurences = weeks_in_history
+            if (days_in_history % 7) >= ((day - earliest_drop_day) % 7):
+                weekday_occurences += 1
+            if weekday_occurences != 0:
+                histogram[day] /= weekday_occurences
+            else:
+                histogram[day] = None
+
+        return histogram
+
 
 def get_tweets(start_time: datetime = None) -> List[Dict[str, Any]]:
     """
@@ -406,6 +443,13 @@ def compute_drop_stats(drops: List[Drop]) -> List[ProductStats]:
     else:
         print("bad drop ratio: %f" % bad_drop_ratio)
 
+    # Temp
+    temp_asin = "B08HR3Y5GQ"
+    print("[")
+    for drop in drop_stats[temp_asin].drops:
+        print("  %s" % drop)
+    print("]")
+
     return list(drop_stats.values())
 
 
@@ -461,6 +505,14 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
                     "Last Drop",
                     "Avg Drop Delta",
                     "Time Since Last Drop",
+                    "",
+                    "Monday",
+                    "Tuesday",
+                    "Wednesday",
+                    "Thursday",
+                    "Friday",
+                    "Satuday",
+                    "Sunday",
                 ]
             )
             csv_writer.writerow([""])
@@ -484,6 +536,11 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
                             product.last_drop.isoformat(" "),
                             str(product.avg_drop_delta),
                             str(time_since_last_drop),
+                            "",
+                        ]
+                        + [
+                            ("%.5f" % v) if v is not None else v
+                            for v in product.weekly_histogram
                         ]
                     )
                 csv_writer.writerow([""])
