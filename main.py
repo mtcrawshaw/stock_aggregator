@@ -26,6 +26,8 @@ TWITTER_USER_URL = "https://api.twitter.com/2/users/by"
 TWITTER_TIMELINE_URL = "https://api.twitter.com/2/users/%s/tweets"
 TWITTER_TIME_FORMAT_1 = "%Y-%m-%dT%H:%M:%S.000Z"
 TWITTER_TIME_FORMAT_2 = "%Y-%m-%dT%H:%M:%SZ"
+TIMEZONE_STR = "EST"
+UTC_OFFSET = timedelta(hours=-5)
 PRODUCT_TYPES = ["RTX3060", "RTX3070", "RTX3080", "RTX3090"]
 MAX_RESULTS = 100
 SINGLE_PAGE = False
@@ -247,7 +249,7 @@ def get_tweets(start_time: datetime = None) -> List[Dict[str, Any]]:
     twitter_timeline_prefix = TWITTER_TIMELINE_URL % user_id
     url = get_url(twitter_timeline_prefix, kwargs)
 
-    # Make API requests.
+    # Make API requests to get user tweets.
     tweets = []
     next_token = None
     num_requests = 0
@@ -361,8 +363,9 @@ def get_drops() -> List[Drop]:
             print("Couldn't parse url `%s' for ASIN." % full_url)
         asin = possible_asins[0]
 
-        # Get time of tweet.
+        # Get time of tweet and convert from UTC (given by Twitter API) to local time.
         drop_time = datetime.strptime(tweet_time, TWITTER_TIME_FORMAT_1)
+        drop_time += UTC_OFFSET
 
         # Get name of product.
         name_end = "N/A"
@@ -443,13 +446,6 @@ def compute_drop_stats(drops: List[Drop]) -> List[ProductStats]:
     else:
         print("bad drop ratio: %f" % bad_drop_ratio)
 
-    # Temp
-    temp_asin = "B08HR3Y5GQ"
-    print("[")
-    for drop in drop_stats[temp_asin].drops:
-        print("  %s" % drop)
-    print("]")
-
     return list(drop_stats.values())
 
 
@@ -488,7 +484,8 @@ def dump_stats(drop_stats: List[ProductStats]) -> None:
         with open(TEMP_CSV_PATH, "w") as temp_csv_file:
             csv_writer = csv.writer(temp_csv_file)
 
-            # Write out header with start date.
+            # Write out header with miscellaneous information.
+            csv_writer.writerow(["All times are given in %s" % TIMEZONE_STR])
             csv_writer.writerow(["Tracking drops since:", start_time.isoformat(" ")])
             csv_writer.writerow(["Last update:", datetime.now().isoformat(" ")])
             csv_writer.writerow([""])

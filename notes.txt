@@ -13,6 +13,8 @@ Outline:
     Time since last drop
     Restocking over days of week for single ASIN, to try to find patterns in restocking
 --> Output data over multiple time scales: last week, last month, last three months, all-time
+    Output entire history of drops
+    Refactoring
     Deployment
 
 Refactoring:
@@ -26,6 +28,8 @@ Refactoring:
         Allow for duplicate hashtags in tweets (3060 vs. 3060TI)
         Expand column size to fit entries
         Normalize time output format
+        Output in multiple sheets
+        More robust way to handle local timezone (right now it's hardcoded)
 
 Additions:
     Get product MSRP (CamelCamelCamel?)
